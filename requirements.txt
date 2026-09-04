@@ -1,0 +1,45 @@
+# Versiones congeladas: son las que corrieron la evidencia del README.
+
+# El orquestador y sus agentes
+langgraph==1.2.9
+langchain-core==1.6.0
+langchain-openai==1.5.2
+langchain-text-splitters==1.1.2
+# El proveedor alternativo del factory (LLM_PROVIDER=anthropic).
+langchain-anthropic==1.7.0
+
+# La base vectorial del corpus y la recuperacion hibrida
+langchain-chroma==1.1.0
+chromadb==1.5.9
+tiktoken==0.13.0
+# EnsembleRetriever: en la v1 vive en langchain-classic, que reemplaza a langchain.retrievers.
+langchain-classic==1.0.8
+# BM25Retriever y su motor. langchain-community esta en sunset y avisa al importar; el
+# patron es el que ensenia el curso y no se cambia por criterio propio.
+langchain-community==0.4.2
+rank-bm25==0.2.2
+
+# La capa de produccion
+fastapi==0.141.1
+uvicorn==0.51.0
+redis==7.4.1
+# Trae el AsyncRedisSaver. Exige RediSearch y RedisJSON en el servidor: la imagen
+# redis:8-alpine del compose los incluye.
+langgraph-checkpoint-redis==0.5.2
+
+# Observabilidad
+langsmith==0.10.9
+
+openai==3.3.1
+pydantic==2.13.4
+# La configuracion por entorno, validada con Pydantic.
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+# Cliente HTTP de demo.py, que golpea la API como lo haria cualquier consumidor.
+httpx==0.28.1
+
+# Tests. `pytest` corre desde el repositorio, sin servicios ni claves; la imagen no copia
+# tests/, asi que adentro del contenedor estos dos quedan instalados y sin usar. Es el precio
+# de un solo requirements.txt, que es lo que pide la consigna.
+pytest==9.1.1
+pytest-asyncio==1.4.0

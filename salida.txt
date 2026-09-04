@@ -1,0 +1,203 @@
+========================================================================================
+API DE PRODUCCIÓN — orquestador multi-agente con revisión humana condicional
+========================================================================================
+
+/health -> 200 · {"estado": "ok", "redis": "redis://redis:6379/0", "trazado": true, "proyecto": "orquestador-rex-final", "proveedor": "openai", "modelos": {"supervisor": "gpt-4o-mini", "investigador": "gpt-4o-mini", "redactor": "gpt-4o-mini"}, "checkpoints": 2997}
+
+========================================================================================
+[0] REDIS POR DENTRO — la cola, los estados y los checkpoints
+========================================================================================
+    PING                     -> True
+    LLEN cola:tareas        -> 0 trabajos en cola
+    claves estado:*          -> 21
+    claves checkpoint*       -> 2997
+    claves decision:*        -> 5
+
+    GET estado:b1699a6e-e1c2-41fb-8a22-2c9e516af86f
+      {"job_id":"b1699a6e-e1c2-41fb-8a22-2c9e516af86f","consulta":"¿Que dijo la Corte sobre los honorarios de peritos?","estado":"completed","thread_id":"b1699a6e-e1c2-41fb-8a22-2c9e516af86f","creada_en":"2026-09-02T09:59:11.600953+00:00","actualizada_en":"2026-09-02T09:59:31.022930+00:00","resultado":"La […]
+
+    una clave del checkpointer: checkpoint:401f9a11-b384-46b3-9ceb-bc6824533a93:__empty__:1f1a6ae4-06dd-6e85-8001-9aa51eada58a
+
+    Los tres usos de Redis conviven: cola de trabajo, estado de los trabajos y
+    checkpoints del grafo. Cada uno con su prefijo y su escritor.
+
+========================================================================================
+[1] LA API NO SE BLOQUEA — responde antes de que el trabajo arranque
+========================================================================================
+    POST /tasks              -> 202 en 45 ms
+    estado devuelto          -> pending
+    job_id                   -> 056c6760-fcdf-4b87-b547-ba8a84d9e169
+    thread_id                -> 056c6760-fcdf-4b87-b547-ba8a84d9e169  (uno por trabajo)
+
+    202 y no 200: la tarea fue aceptada, no resuelta. El trabajo que arranca acá
+    tarda decenas de segundos; el cliente ya tiene su respuesta.
+
+========================================================================================
+[2] CINCO CONSULTAS CONCURRENTES — la prueba de carga
+========================================================================================
+    las 5 aceptadas en 45 ms
+    máximo en «processing» a la vez -> 3 (el worker corre 3 consumidores)
+    las 5 llegaron a destino en 72.9 s
+
+      106b014f · awaiting_approval  publicado=False 0 citas
+      0b684eab · completed          publicado=True  4 citas
+      3a8d9e4d · completed          publicado=True  3 citas
+      b7b9b98f · awaiting_approval  publicado=False 0 citas
+      6a5c67e7 · completed          publicado=True  4 citas
+
+    3 de 5 se publicaron sin intervención humana.
+    3 trabajos en curso a la vez es lo que separa una cola con
+    consumidores concurrentes de un bucle que atiende de a uno.
+
+========================================================================================
+[3] EL CRITERIO — el sistema identifica qué trabajo necesita un humano
+========================================================================================
+    consulta con material holgado : ¿Que es el exceso ritual manifiesto como causal de arbitrari […]
+      -> completed  ·  publicado=True  ·  3 citas  ·  revisiones=0
+
+    consultas de material escaso, hasta que una pida revisión:
+      ¿Que dijo la Corte sobre los honorarios de peritos?        -> completed
+      ¿Que dijo la Corte sobre la prescripcion en materia trib […] -> completed
+      ¿Que valor tiene la doctrina de la arbitrariedad frente  […] -> awaiting_approval
+      motivos           : ['el investigador citó 1 de 8 fallos que no existen en el corpus (cobertura 88%)']
+      cobertura de citas: 88%
+      citas en el texto : 4 (holgura: 3)
+      huella del texto  : b205369902bd5863
+
+    Uno se publicó solo y el otro espera. La pausa no es un peaje que pagan
+    todos: la impone el propio trabajo cuando no se sostiene por sí mismo.
+
+========================================================================================
+[4] EL CHECKPOINT CRUZA PROCESOS — lo escribe el worker, lo lee la API
+========================================================================================
+    GET /tasks/e16d7151…/checkpoint -> 200
+      thread_id             : e16d7151-af20-4ce0-9ea3-57d626dcf903
+      checkpoint_id         : 1f1a7ffd-8d5b-600a-800b-7df1e9da1888
+      guardado_en           : 2026-09-04T01:27:52.157787+00:00
+      escrituras_pendientes : ['__interrupt__']
+      pausado               : True
+      artefactos            : {"investigaciones": 2, "verificaciones": 2, "redacciones": 1, "aprobaciones": 0, "mensajes": 11, "vueltas": 6, "intentos": 1}
+      claves checkpoint*    : 4325
+
+    La API nunca corrió este grafo: no tiene el vectorstore ni inicializa las
+    herramientas. Todo lo de arriba lo leyó del checkpoint que dejó el worker.
+    La marca __interrupt__ es lo que le permite a cualquier worker retomarlo.
+
+========================================================================================
+[5] AMPLIAR — el revisor manda a buscar más doctrina
+========================================================================================
+    citas verificadas antes : 4
+    texto sometido          : La doctrina de la arbitrariedad tiene un valor específico y limitado en el ámbito judicial, especialmente en relación con cuestiones de hecho. Se aplica de manera restringida y exc […]
+
+    POST approve (AMPLIAR) -> 202
+      motivo: Solo cita una linea de doctrina; falta el resto del corpus sobre el tema.
+
+    estado -> awaiting_approval  ·  revisiones: 1
+    citas verificadas ahora : 4
+    texto nuevo             : La doctrina de la arbitrariedad en el ámbito de las sentencias judiciales tiene un valor específico y limitado, especialmente en relación con cuestiones de hecho. En primer lugar,  […]
+    huella distinta         : True
+
+    Ampliar es un problema del material y lo resuelve el investigador; rechazar
+    es un problema del texto y lo resuelve el redactor. Van a agentes distintos.
+
+========================================================================================
+[6] RECHAZAR — el texto vuelve al redactor mientras queden vueltas
+========================================================================================
+    e16d7151 · sigue detenido tras la ampliación, se lo rechaza
+    motivos de la pausa : ['el investigador citó 1 de 12 fallos que no existen en el corpus (cobertura 92%)']
+    primera versión     · huella 1febd1ee8500024f
+      La doctrina de la arbitrariedad en el ámbito de las sentencias judiciales tiene un valor específico y limitado, especialmente en relación con cuestiones de hecho. En primer lugar, se establece que la  […]
+
+    POST approve (RECHAZAR) -> 202
+      motivo: Falta explicar el estándar de la Corte antes de aplicarlo al caso.
+
+    estado tras el rechazo -> awaiting_approval  ·  revisiones: 2
+    redacciones 2 -> 3  ·  vueltas 10 -> 12 de 12
+    segunda versión     · huella 3f8648494907b8fd
+      La doctrina de la arbitrariedad en el ámbito judicial tiene un carácter excepcional y se aplica de manera restringida, especialmente en relación con cuestiones de hecho. La Corte Suprema de Justicia d […]
+
+    interrupt_id distinto : True
+    huella distinta       : True
+
+    La huella impide publicar un texto con la aprobación de otro: el veredicto
+    vale contra el texto exacto que se le mostró al revisor.
+
+========================================================================================
+[7] LOS CÓDIGOS — cada error con su causa
+========================================================================================
+    GET /tasks/no-existe-este-trabajo            -> 404
+      No existe ningun trabajo con id no-existe-este-trabajo.
+
+    POST approve sobre un trabajo ya cerrado     -> 409
+      El trabajo 4f49577a-ddd2-49e8-8cbb-edefbecfc99d esta en «completed» y no espera ninguna aprobacion.
+
+    POST /tasks con una consulta de 5 caracteres -> 422
+    POST approve rechazando sin dar motivos      -> 422
+      un rechazo sin motivo mandaría a reescribir sin decir qué corregir
+    POST approve con una acción que no existe    -> 422
+
+    dos POST approve CONCURRENTES sobre la misma pausa -> [202, 409]
+      El trabajo e16d7151-af20-4ce0-9ea3-57d626dcf903 esta en «completed» y no espera ninguna aprobacion.
+      Uno gana y el otro se entera: la publicación ocurre una sola vez.
+
+    GET decision:e16d7151-af20-4ce0-9ea3-57d626dcf903:72f95e…
+      {"accion": "publicar", "revisor": "beto", "motivos": [], "decidida_en": "2026-09-04T01:28:25.786920+00:00"}
+    SET … NX sobre esa misma clave -> None  (no escribe: ya está decidida)
+
+========================================================================================
+[8] EL CAMINO INFELIZ — un fallo termina el trabajo, no el servicio
+========================================================================================
+    encolado roto-a-proposito: dice esperar una decisión que no existe en Redis
+    estado -> failed
+    error  -> El trabajo roto-a-proposito volvio a la cola esperando aprobacion, pero no hay ninguna decision guardada para esa pausa.
+
+    /health después del fallo -> ok
+    El worker siguió tomando trabajos. Un fallo termina un trabajo, no el servicio.
+
+========================================================================================
+[9] UN WORKER MUERTO NO PIERDE EL TRABAJO — checkpoint + cola de proceso
+========================================================================================
+    encolado d517541c-7d64-4f40-a1cc-ca29764e0b54
+    LRANGE cola:procesando -> ['d517541c-7d64-4f40-a1cc-ca29764e0b54']
+    docker compose kill worker  ·  el proceso murió con el trabajo entre manos
+    estado del trabajo -> processing
+    sigue anotado en la cola de proceso -> True
+    docker compose start worker  ·  el arranque recupera lo que quedó a medias
+    estado final -> completed
+    cola de proceso al terminar -> 0 elementos
+
+    El trabajo lo retomó un proceso distinto del que lo empezó, desde el
+    checkpoint que había quedado en Redis.
+
+========================================================================================
+REDIS AL CERRAR — lo que quedó escrito
+========================================================================================
+    PING                     -> True
+    LLEN cola:tareas        -> 0 trabajos en cola
+    claves estado:*          -> 31
+    claves checkpoint*       -> 4582
+    claves decision:*        -> 8
+
+    GET estado:b1699a6e-e1c2-41fb-8a22-2c9e516af86f
+      {"job_id":"b1699a6e-e1c2-41fb-8a22-2c9e516af86f","consulta":"¿Que dijo la Corte sobre los honorarios de peritos?","estado":"completed","thread_id":"b1699a6e-e1c2-41fb-8a22-2c9e516af86f","creada_en":"2026-09-02T09:59:11.600953+00:00","actualizada_en":"2026-09-02T09:59:31.022930+00:00","resultado":"La […]
+
+    una clave del checkpointer: checkpoint:401f9a11-b384-46b3-9ceb-bc6824533a93:__empty__:1f1a6ae4-06dd-6e85-8001-9aa51eada58a
+
+    Los tres usos de Redis conviven: cola de trabajo, estado de los trabajos y
+    checkpoints del grafo. Cada uno con su prefijo y su escritor.
+
+========================================================================================
+RESUMEN
+========================================================================================
+    OK     [0] Redis por dentro
+    OK     [1] la API no se bloquea
+    OK     [2] cinco consultas concurrentes
+    OK     [3] el criterio identifica el trabajo crítico
+    OK     [4] el checkpoint cruza procesos
+    OK     [5] ampliar vuelve al investigador
+    OK     [6] el rechazo humano llega al grafo
+    OK     [7] los códigos de error
+    OK     [8] el camino infeliz
+    OK     [9] un worker muerto no pierde el trabajo
+
+Los 10 bloques hicieron lo que afirman.

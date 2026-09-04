@@ -1,0 +1,80 @@
+# Levanta el sistema entero:
+#
+#   cp .env.example .env    (y completar las claves)
+#   docker compose up --build
+#
+# Compose lee el .env de esta carpeta, que esta gitignoreado. Para tener las claves fuera del
+# arbol del repositorio: `docker compose --env-file ../.env up --build`.
+
+services:
+  redis:
+    image: redis:8-alpine   # trae RediSearch y RedisJSON, que el checkpointer necesita
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    volumes:
+      - redis-datos:/data
+
+  api:
+    build: .
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MODELO_SUPERVISOR: ${MODELO_SUPERVISOR:-}
+      MODELO_INVESTIGADOR: ${MODELO_INVESTIGADOR:-}
+      MODELO_REDACTOR: ${MODELO_REDACTOR:-}
+      MODELO_EMBEDDINGS: ${MODELO_EMBEDDINGS:-text-embedding-3-small}
+      TEMPERATURA: ${TEMPERATURA:-0}
+      NOMBRE_COLECCION: ${NOMBRE_COLECCION:-csjn_sentencias_arbitrarias}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      PROYECTO_LANGSMITH: ${PROYECTO_LANGSMITH:-orquestador-rex-final}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # python y no curl: la imagen slim no lo trae.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build: .
+    command: python -m app.trabajos.worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MODELO_SUPERVISOR: ${MODELO_SUPERVISOR:-}
+      MODELO_INVESTIGADOR: ${MODELO_INVESTIGADOR:-}
+      MODELO_REDACTOR: ${MODELO_REDACTOR:-}
+      MODELO_EMBEDDINGS: ${MODELO_EMBEDDINGS:-text-embedding-3-small}
+      TEMPERATURA: ${TEMPERATURA:-0}
+      NOMBRE_COLECCION: ${NOMBRE_COLECCION:-csjn_sentencias_arbitrarias}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      PROYECTO_LANGSMITH: ${PROYECTO_LANGSMITH:-orquestador-rex-final}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      # El indice se construye una vez y sobrevive a los reinicios. Sin el volumen, cada
+      # arranque volveria a pagar los embeddings del corpus entero.
+      - indice:/srv/vectorstore
+
+volumes:
+  redis-datos:
+  indice:

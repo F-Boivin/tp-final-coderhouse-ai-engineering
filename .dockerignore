@@ -1,0 +1,17 @@
+# El contexto de build solo necesita lo que el Dockerfile copia. Sin esto, `docker build`
+# manda al daemon el indice entero y el historial de git en cada corrida.
+.git/
+.gitignore
+vectorstore/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+tests/
+screenshots/
+*.md
+.env
+demo.py
+verificar_*.py
+fallo_provocado.py
+salida.txt

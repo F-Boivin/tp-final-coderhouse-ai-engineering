@@ -1,0 +1,17 @@
+.env
+vectorstore/
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+*.pdf
+# La traza SÍ se publica: es la evidencia de la corrida, y salida.txt la referencia. Lo que
+# no viaja es el stderr de una redirección, que en el mejor caso queda vacío y en el peor
+# publica un stack trace.
+*.err
+
+# Los logs de una corrida local no son evidencia: la evidencia es salida.txt.
+*.log
+
+# Cache de pytest
+.pytest_cache/
