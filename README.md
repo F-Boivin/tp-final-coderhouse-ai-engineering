@@ -538,7 +538,7 @@ Los tres errores que la consigna marca:
 ## Estructura
 
 ```
-CODER_AIENG_FINAL/
+tp-final-coderhouse-ai-engineering/
 ├── app/
 │   ├── nucleo/            config.py · modelos.py (factory) · constantes.py · errores.py
 │   ├── rag/               ingesta.py · hibrido.py · herramientas.py
